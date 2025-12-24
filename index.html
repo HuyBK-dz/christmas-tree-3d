@@ -22,7 +22,7 @@
         body {
             margin: 0;
             overflow: hidden;
-            background-color: #02162b; /* Deep black/charcoal */
+            background-color: #02162b; /* Deep night blue */
             font-family: 'Cinzel', serif;
             color: var(--cream);
             user-select: none;
@@ -181,6 +181,54 @@
             pointer-events: none;
             z-index: 0;
         }
+    
+        /* Fullscreen photo overlay */
+        #photo-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(2, 22, 43, 0.96);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.25s ease;
+        }
+        #photo-overlay.photo-visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        #photo-full {
+            max-width: 96vw;
+            max-height: 92vh;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 8px;
+            box-shadow: 0 0 40px rgba(0,0,0,0.45);
+            border: 1px solid rgba(255, 215, 0, 0.25);
+            background: rgba(255,255,255,0.03);
+        }
+        #photo-caption {
+            position: absolute;
+            bottom: 26px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.75);
+            font-family: 'Cinzel', serif;
+            text-align: center;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+        }
+
     </style>
 
     <!-- Import Map -->
@@ -203,20 +251,26 @@
     </div>
 
     <div id="ui-layer">
-        <h1>MERRY CHRISTMAS</h1>
+        <h1>MERRY CHRISTMAS QUỲNH</h1>
 
         <div class="upload-wrapper">
             <label class="btn-glass">
                 Upload Memories
                 <input type="file" id="photo-input" accept="image/*" multiple>
             </label>
-            <div class="hint-text">Hold Pinch to View • Open Hand to Scatter • Fist to Transform</div>
-            <div id="photo-status" class="hint-text"></div>
+            <div class="hint-text">✋ Xòe tay: xem ảnh toàn màn hình • ✊ Nắm tay: quay lại chữ</div>
         </div>
     </div>
 
     <!-- Hand Tracking Cursor -->
     <div id="hand-cursor"></div>
+
+    <!-- Fullscreen Photo Overlay -->
+    <div id="photo-overlay" class="photo-hidden">
+        <img id="photo-full" alt="memory photo" />
+        <div id="photo-caption">✋ Xòe tay để chuyển ảnh • ✊ Nắm tay để quay lại chữ</div>
+    </div>
+
 
     <div id="canvas-container"></div>
 
@@ -255,41 +309,76 @@
             time: 0,
             lastGestureTime: 0,
             cursorPos: new THREE.Vector2(),
-            isFistHeld: false,
-            photoIndex: 0,
-            showPhoto: false
+            isFistHeld: false
         };
 
         const particles = [];
         const photos = [];
-        const PHOTO_TEXTURES = [];
-        let localPhotosLoading = false;
-        let localPhotosLoadedOnce = false;
         const mainGroup = new THREE.Group();
         const snowParticles = [];
 
-        // --- SCENE SETUP ---
+        
+// --- PHOTO OVERLAY STATE ---
+const photoOverlay = document.getElementById('photo-overlay');
+const photoFull = document.getElementById('photo-full');
+const uiLayer = document.getElementById('ui-layer');
+
+let photoUrls = [];
+let photoIdx = 0;
+let lastPalmTime = 0;
+
+async function autoloadImages(maxN = 60) {
+    // Try ./images/1.png ... and also jpg/jpeg/webp
+    const exts = ['png', 'jpg', 'jpeg', 'webp'];
+    const urls = [];
+    for (let i = 1; i <= maxN; i++) {
+        let found = null;
+        for (const ext of exts) {
+            const url = `./images/${i}.${ext}`;
+            const ok = await new Promise((resolve) => {
+                const img = new Image();
+                img.onload = () => resolve(true);
+                img.onerror = () => resolve(false);
+                img.src = url + `?v=${Date.now()}`; // cache-bust
+            });
+            if (ok) { found = url; break; }
+        }
+        if (found) urls.push(found);
+        else break; // stop at first missing index
+    }
+    return urls;
+}
+
+function showPhotoByIndex(idx) {
+    if (!photoUrls.length) return false;
+    const safe = ((idx % photoUrls.length) + photoUrls.length) % photoUrls.length;
+    photoIdx = safe;
+    photoFull.src = photoUrls[safe];
+    photoOverlay.classList.add('photo-visible');
+    uiLayer.classList.add('ui-hidden');
+    return true;
+}
+
+function hidePhoto() {
+    photoOverlay.classList.remove('photo-visible');
+    uiLayer.classList.remove('ui-hidden');
+}
+
+// --- SCENE SETUP ---
         const container = document.getElementById('canvas-container');
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x02162b, 0.015); 
+        scene.fog = new THREE.FogExp2(0x02162b, 0.015);
+        renderer.setClearColor(0x02162b, 1); 
         scene.add(mainGroup);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
         camera.position.set(0, 2, 52);
 
-        const fullscreenGeo = new THREE.PlaneGeometry(2, 2);
-        const fullscreenMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.0 });
-        const fullscreenPhoto = new THREE.Mesh(fullscreenGeo, fullscreenMat);
-        fullscreenPhoto.renderOrder = 999;
-        fullscreenPhoto.frustumCulled = false;
-        scene.add(fullscreenPhoto);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.2;
-        renderer.setClearColor(0x02162b, 1);
         container.appendChild(renderer.domElement);
 
         // Environment
@@ -406,44 +495,45 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         });
 
         // --- TEXT GENERATION ---
-        function generateTextPositions(text) {
-            const positions = [];
-            const canvas = document.createElement('canvas');
-            const cw = 2048; const ch = 1024; // Doubled height for 2 lines
-            canvas.width = cw; canvas.height = ch;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#000000'; ctx.fillRect(0, 0, cw, ch);
-            ctx.fillStyle = '#ffffff';
-            ctx.font = '900 200px "Cinzel", serif'; 
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            
-            // Hardcoded split for better layout control
-            ctx.fillText("MERRY", cw / 2, ch * 0.25);
-            ctx.fillText("CHRISTMAS", cw / 2, ch * 0.60);
-            ctx.font = '900 160px "Cinzel", serif';
-            ctx.fillText("QUỲNH", cw / 2, ch * 0.88);
+        function generateTextPositions() {
+    const positions = [];
+    const canvas = document.createElement('canvas');
+    const cw = 2048; const ch = 1200; // room for 2 lines
+    canvas.width = cw; canvas.height = ch;
+    const ctx = canvas.getContext('2d');
 
-const data = ctx.getImageData(0, 0, cw, ch).data;
-            const step = 4;
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, cw, ch);
 
-            for (let y = 0; y < ch; y += step) {
-                for (let x = 0; x < cw; x += step) {
-                    const idx = (y * cw + x) * 4;
-                    if (data[idx] > 100) {
-                        // Width scale: 30 (CHRISTMAS fits nicely)
-                        const px = (x / cw - 0.5) * 36; 
-                        // Height scale: 24 (spreads lines vertically)
-                        // Offset +2 to center it vertically relative to camera
-                        const py = -(y / ch - 0.5) * 26 + 1.5; 
-                        positions.push(new THREE.Vector3(px, py, 0));
-                    }
-                }
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Two-line layout: "MERRY" + "CHRISTMAS QUỲNH"
+    ctx.font = '900 210px "Cinzel", serif';
+    ctx.fillText("MERRY", cw / 2, ch * 0.35);
+
+    ctx.font = '900 190px "Cinzel", serif';
+    ctx.fillText("CHRISTMAS QUỲNH", cw / 2, ch * 0.72);
+
+    const data = ctx.getImageData(0, 0, cw, ch).data;
+    const step = 4;
+
+    for (let y = 0; y < ch; y += step) {
+        for (let x = 0; x < cw; x += step) {
+            const idx = (y * cw + x) * 4;
+            if (data[idx] > 100) {
+                const px = (x / cw - 0.5) * 34;
+                const py = -(y / ch - 0.5) * 26 + 2;
+                positions.push(new THREE.Vector3(px, py, 0));
             }
-            return positions;
         }
+    }
+    return positions;
+}
 
-        const textPositions = generateTextPositions("MERRY CHRISTMAS QUỲNH");
+const textPositions = generateTextPositions();
+
 
         // --- PARTICLE CREATION ---
         function createParticle(type, customTex = null) {
@@ -575,71 +665,15 @@ const data = ctx.getImageData(0, 0, cw, ch).data;
             // 1. Create the STAR (Index 0)
             createParticle('STAR');
 
-            // 2. Auto-load local images from ./images/ (1.png, 2.png, ...).
-// GitHub Pages cannot list directories, so we probe sequentially and stop at first missing index.
-const statusEl = document.getElementById('photo-status');
-function setPhotoStatus(msg) {
-    if (statusEl) statusEl.textContent = msg || '';
-}
-
-function loadTexture(url) {
-    return new Promise((resolve, reject) => {
-        textureLoader.load(
-            url + `?v=${Date.now()}`, // avoid cache while iterating
-            (tex) => resolve(tex),
-            undefined,
-            (err) => reject(err)
-        );
-    });
-}
-
-async function startLocalPhotoLoading(max = 50) {
-    if (localPhotosLoading) return;
-    localPhotosLoading = true;
-
-    setPhotoStatus('Loading local photos from /images ...');
-
-    let loaded = 0;
-    const exts = ['png', 'jpg', 'jpeg', 'webp'];
-    for (let i = 1; i <= max; i++) {
-        let foundForIndex = false;
-
-        for (const ext of exts) {
-            const url = `./images/${i}.${ext}`;
-            try {
-                const tex = await loadTexture(url);
-                tex.colorSpace = THREE.SRGBColorSpace;
-                PHOTO_TEXTURES.push(tex);
-                loaded++;
-                foundForIndex = true;
-
-                if (!localPhotosLoadedOnce) {
-                    localPhotosLoadedOnce = true;
-                    setPhotoStatus(`Loaded ${loaded} photo(s).`);
-                } else {
-                    setPhotoStatus(`Loaded ${loaded} photo(s).`);
-                }
-                break; // stop trying extensions for this index
-            } catch (e) {
-                // try next ext
+            // 2. Load images logic
+            for (let i = 1; i <= 20; i++) {
+                textureLoader.load(`./images/${i}.png`, (tex) => {
+                    tex.colorSpace = THREE.SRGBColorSpace;
+                    addPhotoToScene(tex);
+                }, undefined, () => {});
             }
-        }
-
-        // Stop when we cannot find any image for the current index.
-        if (!foundForIndex) break;
-    }
-
-    if (loaded === 0) {
-        setPhotoStatus('No local photos found in /images (expected 1.png, 2.png, ...). You can still use Upload Memories.');
-    } else {
-        setPhotoStatus(`Ready: ${loaded} photo(s) found in /images.`);
-    }
-}
-
-startLocalPhotoLoading(60);
-            window.__startLocalPhotoLoading = startLocalPhotoLoading;
-
-// 3. Fill the rest
+            
+            // 3. Fill the rest
             const remaining = CONFIG.particleCount - particles.length; 
             for (let i = 0; i < remaining; i++) {
                 const r = Math.random();
@@ -653,6 +687,12 @@ startLocalPhotoLoading(60);
             }
         }
         initContent();
+
+        // Autoload images from repo folder ./images/
+        (async () => {
+            photoUrls = await autoloadImages(60);
+            console.log('Autoloaded images:', photoUrls);
+        })();
 
         // Default Photo Texture
         function createDefaultPhoto() {
@@ -792,56 +832,43 @@ startLocalPhotoLoading(60);
             STATE.handRotation.y = (L[9].x - 0.5) * 4.0; 
             STATE.handRotation.x = (L[9].y - 0.5) * 1.5;
 
-            // Gesture Recognition
-            const pinchDist = Math.hypot(L[4].x - L[8].x, L[4].y - L[8].y);
-            const tips = [L[8], L[12], L[16], L[20]];
-            let avgTipDist = 0;
-            tips.forEach(p => avgTipDist += dist(p, L[0]));
-            avgTipDist /= 4;
+            // Gesture Recognition (Simplified)
+const now = Date.now();
 
-            const now = Date.now();
-
-            // --- Simple interaction mode ---
-            // Default: TEXT shows "MERRY CHRISTMAS QUỲNH"
-            // Open hand (avgTipDist > 0.40) => show next photo fullscreen
-            // Fist (avgTipDist < 0.25) => back to TEXT
-
-            const COOLDOWN = 700;
-
-            // FIST => back to text
-            if (avgTipDist < 0.25) {
-                if (!STATE.isFistHeld) {
-                    STATE.isFistHeld = true;
-                    STATE.mode = 'TEXT';
-                    STATE.showPhoto = false;
-                    fullscreenMat.opacity = 0.0;
-                    fullscreenMat.map = null;
-                }
-                return;
+// Open palm: show fullscreen photo, and advance on each palm gesture
+if (avgTipDist > 0.42) {
+    if (now - lastPalmTime > 700) {
+        // If overlay already visible -> next photo
+        if (photoOverlay.classList.contains('photo-visible')) {
+            showPhotoByIndex(photoIdx + 1);
+        } else {
+            // first time open palm: show current/first photo
+            if (!showPhotoByIndex(photoIdx)) {
+                // no photos found
+                console.warn("No photos found in ./images/");
             }
-
-            // Not fist anymore
-            STATE.isFistHeld = false;
-
-            // OPEN HAND => next photo fullscreen
-            if (avgTipDist > 0.40 && (now - STATE.lastGestureTime > COOLDOWN)) {
-                if (PHOTO_TEXTURES.length === 0) {
-                    // Photos still loading (or none found). Trigger (re)load and show hint.
-                    if (window.__startLocalPhotoLoading) window.__startLocalPhotoLoading(60);
-                    const statusEl = document.getElementById('photo-status');
-                    if (statusEl) statusEl.textContent = statusEl.textContent || 'Loading photos from /images ...';
-                } else {
-                    STATE.photoIndex = (STATE.photoIndex + 1) % PHOTO_TEXTURES.length;
-                    const tex = PHOTO_TEXTURES[STATE.photoIndex];
-                    fullscreenMat.map = tex;
-                    fullscreenMat.needsUpdate = true;
-                    STATE.mode = 'PHOTO';
-                    STATE.showPhoto = true;
-                    fullscreenMat.opacity = 1.0;
-                }
-                STATE.lastGestureTime = now;
-            }
+        }
+        lastPalmTime = now;
+    }
+    STATE.isFistHeld = false;
+    return;
 }
+
+// Fist: hide photo, return to TEXT
+if (avgTipDist < 0.25) {
+    if (!STATE.isFistHeld && now - STATE.lastGestureTime > 250) {
+        hidePhoto();
+        STATE.mode = 'TEXT';
+        STATE.lastGestureTime = now;
+    }
+    STATE.isFistHeld = true;
+    return;
+}
+
+// Optional: pinch can be ignored in this simplified experience
+STATE.isFistHeld = false;
+
+        }
 
         const raycaster = new THREE.Raycaster();
         function findClosestPhoto() {
@@ -880,38 +907,6 @@ startLocalPhotoLoading(60);
             }
             
             mainGroup.updateMatrixWorld();
-
-            // Fullscreen photo overlay
-            if (STATE.showPhoto && fullscreenMat.map && fullscreenMat.map.image) {
-                fullscreenPhoto.visible = true;
-
-                // Position plane in front of camera
-                const camDir = new THREE.Vector3();
-                camera.getWorldDirection(camDir);
-                const dist = 12;
-                fullscreenPhoto.position.copy(camera.position).add(camDir.multiplyScalar(dist));
-                fullscreenPhoto.quaternion.copy(camera.quaternion);
-
-                const imgW = fullscreenMat.map.image.videoWidth || fullscreenMat.map.image.width || 1;
-                const imgH = fullscreenMat.map.image.videoHeight || fullscreenMat.map.image.height || 1;
-                const imgAspect = imgW / imgH;
-                const screenAspect = camera.aspect;
-
-                // Fit to screen (contain)
-                let planeH = 10.5;
-                let planeW = planeH * imgAspect;
-                if (planeW / planeH > screenAspect) {
-                    planeW = 10.5 * screenAspect;
-                    planeH = planeW / imgAspect;
-                }
-                fullscreenPhoto.scale.set(planeW, planeH, 1);
-            } else {
-                fullscreenPhoto.visible = false;
-            }
-
-            // Hide the 3D tree/text particles when showing fullscreen photo
-            mainGroup.visible = !STATE.showPhoto;
-
 
             const focusTarget = STATE.focusTarget;
 
