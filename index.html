@@ -287,7 +287,19 @@
         import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
         import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
-        // --- GLOBAL STATE ---
+        
+        // --- FAST LOADER: never block UI waiting for camera/models ---
+        const loaderEl = document.getElementById('loader');
+        function hideLoader() {
+            if (!loaderEl || loaderEl.dataset.hidden === "1") return;
+            loaderEl.dataset.hidden = "1";
+            loaderEl.style.opacity = '0';
+            setTimeout(() => { try { loaderEl.remove(); } catch(e) {} }, 1000);
+        }
+        // Always show the experience quickly; camera/model can load in the background
+        setTimeout(hideLoader, 1200);
+
+// --- GLOBAL STATE ---
         const CONFIG = {
             colors: {
                 gold: 0xffd700,
@@ -323,52 +335,72 @@ const photoOverlay = document.getElementById('photo-overlay');
 const photoFull = document.getElementById('photo-full');
 const uiLayer = document.getElementById('ui-layer');
 
-let photoUrls = [];
+
+let photoUrls = Array.from({ length: 30 }, (_, i) => `./images/${i + 1}.png`);
 let photoIdx = 0;
 let lastPalmTime = 0;
+let isPhotoLoading = false;
 
-async function autoloadImages(maxN = 60) {
-    // Try ./images/1.png ... and also jpg/jpeg/webp
-    const exts = ['png', 'jpg', 'jpeg', 'webp'];
-    const urls = [];
-    for (let i = 1; i <= maxN; i++) {
-        let found = null;
-        for (const ext of exts) {
-            const url = `./images/${i}.${ext}`;
-            const ok = await new Promise((resolve) => {
-                const img = new Image();
-                img.onload = () => resolve(true);
-                img.onerror = () => resolve(false);
-                img.src = url + `?v=${Date.now()}`; // cache-bust
-            });
-            if (ok) { found = url; break; }
-        }
-        if (found) urls.push(found);
-        else break; // stop at first missing index
-    }
-    return urls;
+function _loadImg(url) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => reject(new Error("load failed"));
+        img.src = url;
+    });
 }
 
-function showPhotoByIndex(idx) {
+async function showPhotoByIndex(idx) {
+    if (isPhotoLoading) return false;
     if (!photoUrls.length) return false;
-    const safe = ((idx % photoUrls.length) + photoUrls.length) % photoUrls.length;
-    photoIdx = safe;
-    photoFull.src = photoUrls[safe];
+
+    isPhotoLoading = true;
+
+    // show overlay immediately (so user sees feedback), then resolve actual image
     photoOverlay.classList.add('photo-visible');
     uiLayer.classList.add('ui-hidden');
-    return true;
+    photoFull.style.opacity = '0.25';
+    photoFull.removeAttribute('src');
+
+    const total = photoUrls.length;
+    let cur = ((idx % total) + total) % total;
+
+    for (let attempts = 0; attempts < total; attempts++) {
+        const url = photoUrls[cur];
+        try {
+            // cache bust so GitHub Pages updates reliably
+            await _loadImg(url + `?v=${Date.now()}`);
+            photoFull.src = url;
+            photoFull.style.opacity = '1';
+            photoIdx = cur;
+            isPhotoLoading = false;
+            return true;
+        } catch (e) {
+            cur = (cur + 1) % total;
+        }
+    }
+
+    // nothing found
+    hidePhoto();
+    console.warn("No photos found in ./images/ (expected images/1.png, 2.png, ...)");
+    isPhotoLoading = false;
+    return false;
 }
 
 function hidePhoto() {
     photoOverlay.classList.remove('photo-visible');
     uiLayer.classList.remove('ui-hidden');
+    photoFull.removeAttribute('src');
+    photoFull.style.opacity = '1';
+    isPhotoLoading = false;
 }
+
 
 // --- SCENE SETUP ---
         const container = document.getElementById('canvas-container');
+
         const scene = new THREE.Scene();
         scene.fog = new THREE.FogExp2(0x02162b, 0.015);
-        renderer.setClearColor(0x02162b, 1); 
         scene.add(mainGroup);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
@@ -377,11 +409,13 @@ function hidePhoto() {
         const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setClearColor(0x02162b, 1);
         renderer.toneMapping = THREE.ACESFilmicToneMapping;
         renderer.toneMappingExposure = 1.2;
         container.appendChild(renderer.domElement);
 
         // Environment
+                // Environment
         const pmremGenerator = new THREE.PMREMGenerator(renderer);
         scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
 
@@ -687,14 +721,7 @@ const textPositions = generateTextPositions();
             }
         }
         initContent();
-
-        // Autoload images from repo folder ./images/
-        (async () => {
-            photoUrls = await autoloadImages(60);
-            console.log('Autoloaded images:', photoUrls);
-        })();
-
-        // Default Photo Texture
+// Default Photo Texture
         function createDefaultPhoto() {
             const canvas = document.createElement('canvas');
             canvas.width = 512; canvas.height = 340;
@@ -786,14 +813,13 @@ const textPositions = generateTextPositions();
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true });
                 video.srcObject = stream;
                 video.addEventListener("loadeddata", () => {
-                    document.getElementById('loader').style.opacity = '0';
-                    setTimeout(() => document.getElementById('loader').remove(), 1000);
+                    hideLoader();
                     predict();
                 });
             } catch (err) {
                 console.warn("Webcam not accessible", err);
-                document.getElementById('loader').innerHTML = "<div class='loader-text'>MOUSE ONLY</div>";
-                setTimeout(() => document.getElementById('loader').remove(), 2000);
+                if (loaderEl) loaderEl.innerHTML = "<div class='loader-text'>MOUSE ONLY</div>";
+                setTimeout(hideLoader, 1200);
             }
         }
 
@@ -833,6 +859,12 @@ const textPositions = generateTextPositions();
             STATE.handRotation.x = (L[9].y - 0.5) * 1.5;
 
             // Gesture Recognition (Simplified)
+
+            // --- Simple openness metric (0..~1): avg distance from wrist to finger tips
+            const tipIds = [8, 12, 16, 20];
+            let tipSum = 0;
+            for (const id of tipIds) tipSum += dist(L[id], L[0]);
+            const avgTipDist = tipSum / tipIds.length;
 const now = Date.now();
 
 // Open palm: show fullscreen photo, and advance on each palm gesture
@@ -843,10 +875,7 @@ if (avgTipDist > 0.42) {
             showPhotoByIndex(photoIdx + 1);
         } else {
             // first time open palm: show current/first photo
-            if (!showPhotoByIndex(photoIdx)) {
-                // no photos found
-                console.warn("No photos found in ./images/");
-            }
+            showPhotoByIndex(photoIdx);
         }
         lastPalmTime = now;
     }
