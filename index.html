@@ -211,6 +211,7 @@
                 <input type="file" id="photo-input" accept="image/*" multiple>
             </label>
             <div class="hint-text">Hold Pinch to View • Open Hand to Scatter • Fist to Transform</div>
+            <div id="photo-status" class="hint-text"></div>
         </div>
     </div>
 
@@ -262,6 +263,8 @@
         const particles = [];
         const photos = [];
         const PHOTO_TEXTURES = [];
+        let localPhotosLoading = false;
+        let localPhotosLoadedOnce = false;
         const mainGroup = new THREE.Group();
         const snowParticles = [];
 
@@ -572,15 +575,71 @@ const data = ctx.getImageData(0, 0, cw, ch).data;
             // 1. Create the STAR (Index 0)
             createParticle('STAR');
 
-            // 2. Load images logic
-            for (let i = 1; i <= 50; i++) {
-                textureLoader.load(`./images/${i}.png`, (tex) => {
-                    tex.colorSpace = THREE.SRGBColorSpace;
-                    PHOTO_TEXTURES.push(tex);
-                }, undefined, () => {});
+            // 2. Auto-load local images from ./images/ (1.png, 2.png, ...).
+// GitHub Pages cannot list directories, so we probe sequentially and stop at first missing index.
+const statusEl = document.getElementById('photo-status');
+function setPhotoStatus(msg) {
+    if (statusEl) statusEl.textContent = msg || '';
+}
+
+function loadTexture(url) {
+    return new Promise((resolve, reject) => {
+        textureLoader.load(
+            url + `?v=${Date.now()}`, // avoid cache while iterating
+            (tex) => resolve(tex),
+            undefined,
+            (err) => reject(err)
+        );
+    });
+}
+
+async function startLocalPhotoLoading(max = 50) {
+    if (localPhotosLoading) return;
+    localPhotosLoading = true;
+
+    setPhotoStatus('Loading local photos from /images ...');
+
+    let loaded = 0;
+    const exts = ['png', 'jpg', 'jpeg', 'webp'];
+    for (let i = 1; i <= max; i++) {
+        let foundForIndex = false;
+
+        for (const ext of exts) {
+            const url = `./images/${i}.${ext}`;
+            try {
+                const tex = await loadTexture(url);
+                tex.colorSpace = THREE.SRGBColorSpace;
+                PHOTO_TEXTURES.push(tex);
+                loaded++;
+                foundForIndex = true;
+
+                if (!localPhotosLoadedOnce) {
+                    localPhotosLoadedOnce = true;
+                    setPhotoStatus(`Loaded ${loaded} photo(s).`);
+                } else {
+                    setPhotoStatus(`Loaded ${loaded} photo(s).`);
+                }
+                break; // stop trying extensions for this index
+            } catch (e) {
+                // try next ext
             }
-            
-            // 3. Fill the rest
+        }
+
+        // Stop when we cannot find any image for the current index.
+        if (!foundForIndex) break;
+    }
+
+    if (loaded === 0) {
+        setPhotoStatus('No local photos found in /images (expected 1.png, 2.png, ...). You can still use Upload Memories.');
+    } else {
+        setPhotoStatus(`Ready: ${loaded} photo(s) found in /images.`);
+    }
+}
+
+startLocalPhotoLoading(60);
+            window.__startLocalPhotoLoading = startLocalPhotoLoading;
+
+// 3. Fill the rest
             const remaining = CONFIG.particleCount - particles.length; 
             for (let i = 0; i < remaining; i++) {
                 const r = Math.random();
@@ -766,7 +825,12 @@ const data = ctx.getImageData(0, 0, cw, ch).data;
 
             // OPEN HAND => next photo fullscreen
             if (avgTipDist > 0.40 && (now - STATE.lastGestureTime > COOLDOWN)) {
-                if (PHOTO_TEXTURES.length > 0) {
+                if (PHOTO_TEXTURES.length === 0) {
+                    // Photos still loading (or none found). Trigger (re)load and show hint.
+                    if (window.__startLocalPhotoLoading) window.__startLocalPhotoLoading(60);
+                    const statusEl = document.getElementById('photo-status');
+                    if (statusEl) statusEl.textContent = statusEl.textContent || 'Loading photos from /images ...';
+                } else {
                     STATE.photoIndex = (STATE.photoIndex + 1) % PHOTO_TEXTURES.length;
                     const tex = PHOTO_TEXTURES[STATE.photoIndex];
                     fullscreenMat.map = tex;
