@@ -924,11 +924,11 @@ STATE.isFistHeld = false;
                 if (STATE.mode === 'FOCUS' && p === focusTarget) {
                     const camDir = new THREE.Vector3();
                     camera.getWorldDirection(camDir);
-                    const worldTargetPos = new THREE.Vector3().copy(camera.position).add(camDir.multiplyScalar(15));
+                    const worldTargetPos = new THREE.Vector3().copy(camera.position).add(camDir.multiplyScalar(22));
                     targetPos.copy(worldTargetPos);
                     mainGroup.worldToLocal(targetPos);
                     targetRot.set(-mainGroup.rotation.x, -mainGroup.rotation.y, -mainGroup.rotation.z);
-                    targetScale.setScalar(4.5);
+                    targetScale.setScalar(3.0); // smaller: fit within window
                 } else {
                     if (STATE.mode === 'TREE' || (STATE.mode === 'FOCUS' && p !== focusTarget)) {
                          targetPos.copy(p.userData.treePos);
